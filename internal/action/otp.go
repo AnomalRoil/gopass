@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gopasspw/gopass/internal/action/exit"
@@ -15,6 +16,9 @@ import (
 	"github.com/gopasspw/gopass/pkg/debug"
 	"github.com/gopasspw/gopass/pkg/otp"
 	"github.com/gopasspw/gopass/pkg/termio"
+	"github.com/kbinani/screenshot"
+	"github.com/makiuchi-d/gozxing"
+	"github.com/makiuchi-d/gozxing/qrcode"
 	"github.com/mattn/go-tty"
 	"github.com/pquerna/otp/hotp"
 	"github.com/pquerna/otp/totp"
@@ -32,6 +36,55 @@ func (s *Action) OTP(c *cli.Context) error {
 	qrf := c.String("qr")
 	clip := c.Bool("clip")
 	pw := c.Bool("password")
+	snip := c.Bool("snip")
+
+	if snip {
+		var qr string
+		for i := 0; i < screenshot.NumActiveDisplays(); i++ {
+			out.Noticef(ctx, "Scanning screen n°%d", i)
+
+			img, err := screenshot.CaptureDisplay(i)
+			if err != nil {
+				return err
+			}
+
+			out.OKf(ctx, "Area scanned on screen n°%d: %v", i, img.Bounds())
+
+			bmp, err := gozxing.NewBinaryBitmapFromImage(img)
+			if err != nil {
+				return err
+			}
+
+			// decode image
+			qrReader := qrcode.NewQRCodeReader()
+			result, err := qrReader.Decode(bmp, nil)
+			if err != nil {
+				out.Warningf(ctx, "No QR code found while parsing screen n°%d.", i)
+				continue
+			}
+			out.Noticef(ctx, "Found a qrcode, checking.")
+			if strings.HasPrefix(result.GetText(), "otpauth://") {
+				qr = result.GetText()
+				out.OKf(ctx, "Found an otpauth:// QR code on screen n°%d (%v)", i, img.Bounds())
+				break
+			}
+			out.Warningf(ctx, "Not an otpauth:// QR code, please make sure to only have your OTP qrcode displayed.")
+		}
+
+		if len(qr) == 0 {
+			return nil
+		}
+		choice, err := termio.AskForBool(ctx, "(Over)writing otpauth URL in key 'otpauth'?", true)
+		if err != nil || !choice {
+			return err
+		}
+		err = s.insertYAML(ctxutil.WithInteractive(ctx, false), name, "otpauth", []byte(qr), nil)
+		if err != nil {
+			return err
+		}
+
+		out.Print(ctx, "Value written, carrying on to display OTP value from it.")
+	}
 
 	return s.otp(ctx, name, qrf, clip, pw, true)
 }
